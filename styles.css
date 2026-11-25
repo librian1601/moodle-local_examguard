@@ -1,0 +1,163 @@
+/**
+ * Styles for local_examguard.
+ *
+ * Critical styles for the penalty overlay are applied inline by guard.js so
+ * the lock is never delayed by a cold theme CSS cache. This file adds the
+ * cosmetic and print rules.
+ *
+ * @package    local_examguard
+ * @copyright  2026 Librian Yudhista Pambudi (https://librian.my.id)
+ * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+
+.examguard-active .qtext,
+.examguard-active .formulation,
+.examguard-active .answer,
+.examguard-active .que,
+.examguard-active .questionflag {
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+}
+
+.examguard-aitrap {
+    position: absolute !important;
+    left: -9999px !important;
+    top: auto !important;
+    width: 1px !important;
+    height: 1px !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    font-size: 1px !important;
+    line-height: 1px !important;
+    color: transparent !important;
+    pointer-events: none !important;
+    user-select: none !important;
+}
+
+#examguard-watermark {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 9998;
+    overflow: hidden;
+}
+
+#examguard-watermark .examguard-watermark-tile {
+    position: absolute;
+    white-space: nowrap;
+    font-size: 12px;
+    font-family: Arial, Helvetica, sans-serif;
+    color: #000;
+    transform: rotate(-24deg);
+    transform-origin: center;
+    pointer-events: none;
+    user-select: none;
+}
+
+#examguard-penalty-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100vw;
+    height: 100vh;
+    background: #ffffff;
+    z-index: 999999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    box-sizing: border-box;
+    overflow: auto;
+}
+
+#examguard-penalty-overlay .examguard-penalty-box {
+    max-width: 640px;
+    width: 100%;
+    text-align: center;
+    font-family: Arial, Helvetica, sans-serif;
+    color: #1d2125;
+}
+
+#examguard-countdown {
+    font-size: 56px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 2px;
+    color: #0f6cbf;
+}
+
+#examguard-penalty-notice {
+    background: #f8d7da;
+    border: 1px solid #f5c2c7;
+    border-radius: 6px;
+    color: #842029;
+    padding: 10px 12px;
+    font-size: 13px;
+}
+
+html.examguard-lock #page,
+html.examguard-lock #page-footer {
+    visibility: hidden !important;
+}
+
+html.examguard-lock body {
+    background: #ffffff !important;
+}
+
+/* Report page. */
+.examguard-report-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin: 16px 0 24px;
+}
+
+.examguard-report-summary .card {
+    min-width: 180px;
+    flex: 1 1 180px;
+}
+
+.examguard-report-filters .form-group {
+    margin-bottom: 8px;
+}
+
+.examguard-badge-active {
+    background: #dc3545;
+    color: #fff;
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 12px;
+}
+
+.examguard-badge-ended {
+    background: #6c757d;
+    color: #fff;
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 12px;
+}
+
+.examguard-muted {
+    color: #5c6770;
+    font-size: 12px;
+}
+
+/* Printing the quiz content is not allowed. */
+@media print {
+    body.examguard-active #page,
+    body.examguard-active #page-footer,
+    #examguard-watermark,
+    #examguard-penalty-overlay {
+        display: none !important;
+    }
+}

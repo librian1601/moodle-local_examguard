@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" role="img" aria-label="ExamGuard">
+  <path fill="#0f6cbf" d="M12 2 4 5v6c0 5.05 3.41 9.74 8 11 4.59-1.26 8-5.95 8-11V5l-8-3Z"/>
+  <path fill="#ffffff" d="M11 7h2v6h-2V7Zm0 8h2v2h-2v-2Z"/>
+</svg>

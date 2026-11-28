@@ -78,5 +78,16 @@ function xmldb_local_examguard_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2026111505, 'local', 'examguard');
     }
 
+    if ($oldversion < 2026112600) {
+        $table = new xmldb_table('local_examguard_quiz');
+        $field = new xmldb_field('maxpenaltyseconds', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '600', 'penaltyseconds');
+
+        if (!$dbman->field_exists($table, $field)) {
+            $dbman->add_field($table, $field);
+        }
+
+        upgrade_plugin_savepoint(true, 2026112600, 'local', 'examguard');
+    }
+
     return true;
 }

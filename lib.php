@@ -71,6 +71,56 @@ function local_examguard_extend_navigation_course($navigation, $course, $context
 }
 
 /**
+ * Add the ExamGuard tab to the quiz module secondary navigation when applicable.
+ *
+ * Only shown on quiz pages for users with viewreport or manage capability when
+ * ExamGuard is enabled for that quiz or historical logs/penalties exist.
+ *
+ * @param settings_navigation $settingsnav settings navigation tree.
+ * @param context $context current page context.
+ */
+function local_examguard_extend_settings_navigation(settings_navigation $settingsnav, context $context) {
+    if (!($context instanceof \context_module)) {
+        return;
+    }
+
+    // Do NOT use empty($page->cm): moodle_page::$cm is a magic __get() property
+    // without __isset(), so empty($page->cm) always evaluates to true in PHP.
+    $page = $settingsnav->get_page();
+    $cm = $page ? $page->cm : null;
+    if (!$cm || $cm->modname !== 'quiz') {
+        return;
+    }
+    if (!has_capability('local/examguard:viewreport', $context)
+            && !has_capability('local/examguard:manage', $context)) {
+        return;
+    }
+
+    $quizid = (int) $cm->instance;
+    if (!\local_examguard\penalty_manager::should_show_quiz_tab($quizid)) {
+        return;
+    }
+
+    $modulesettings = $settingsnav->find('modulesettings', navigation_node::TYPE_SETTING);
+    if (!$modulesettings || $modulesettings->get('local_examguard_quizreport')) {
+        return;
+    }
+
+    $url = new moodle_url('/local/examguard/index.php', ['cmid' => (int) $cm->id]);
+    $node = $modulesettings->add(
+        get_string('tab_examguard', 'local_examguard'),
+        $url,
+        navigation_node::TYPE_SETTING,
+        null,
+        'local_examguard_quizreport',
+        new pix_icon('i/report', '')
+    );
+    if ($node && method_exists($node, 'set_force_into_more_menu')) {
+        $node->set_force_into_more_menu(false);
+    }
+}
+
+/**
  * Inject per-quiz ExamGuard settings into the quiz mod_form.
  *
  * Called by Moodle core when building the activity edit form. Only acts when
@@ -120,6 +170,16 @@ function local_examguard_coursemodule_standard_elements($formwrapper, $mform) {
     $mform->addRule('examguard_penaltyseconds', null, 'numeric', null, 'client');
     $mform->hideIf('examguard_penaltyseconds', 'examguard_enabled', 'eq', 0);
 
+    // ── maxpenaltyseconds ────────────────────────────────────────────────
+    $defaultmaxpenalty = \local_examguard\penalty_manager::setting_int('maxpenaltyseconds', 600);
+    $mform->addElement('text', 'examguard_maxpenaltyseconds',
+        get_string('quiz_maxpenaltyseconds', 'local_examguard'));
+    $mform->addHelpButton('examguard_maxpenaltyseconds', 'quiz_maxpenaltyseconds', 'local_examguard');
+    $mform->setDefault('examguard_maxpenaltyseconds', $defaultmaxpenalty);
+    $mform->setType('examguard_maxpenaltyseconds', PARAM_INT);
+    $mform->addRule('examguard_maxpenaltyseconds', null, 'numeric', null, 'client');
+    $mform->hideIf('examguard_maxpenaltyseconds', 'examguard_enabled', 'eq', 0);
+
     // ── freezetimermax ───────────────────────────────────────────────────
     $mform->addElement('text', 'examguard_freezetimermax',
         get_string('quiz_freezetimermax', 'local_examguard'));
@@ -168,11 +228,12 @@ function local_examguard_coursemodule_standard_elements($formwrapper, $mform) {
     if ($quizid > 0) {
         $existing = $DB->get_record('local_examguard_quiz', ['quizid' => $quizid]);
         if ($existing) {
-            $mform->setDefault('examguard_enabled',        (int) $existing->enabled);
-            $mform->setDefault('examguard_penaltyseconds', (int) $existing->penaltyseconds);
-            $mform->setDefault('examguard_freezetimermax', (int) $existing->freezetimermax);
-            $mform->setDefault('examguard_watermark',      isset($existing->watermark) ? (int) $existing->watermark : $defaultwatermark);
-            $mform->setDefault('examguard_lang',           isset($existing->lang) ? $existing->lang : $defaultlang);
+            $mform->setDefault('examguard_enabled',           (int) $existing->enabled);
+            $mform->setDefault('examguard_penaltyseconds',    (int) $existing->penaltyseconds);
+            $mform->setDefault('examguard_maxpenaltyseconds', isset($existing->maxpenaltyseconds) ? (int) $existing->maxpenaltyseconds : $defaultmaxpenalty);
+            $mform->setDefault('examguard_freezetimermax',    (int) $existing->freezetimermax);
+            $mform->setDefault('examguard_watermark',         isset($existing->watermark) ? (int) $existing->watermark : $defaultwatermark);
+            $mform->setDefault('examguard_lang',              isset($existing->lang) ? $existing->lang : $defaultlang);
         }
     }
 }
@@ -201,33 +262,36 @@ function local_examguard_coursemodule_edit_post_actions($data, $course) {
         return $data;
     }
 
-    $now       = time();
-    $enabled   = (int) ($data->examguard_enabled ?? 0);
-    $penalty   = max(1, (int) ($data->examguard_penaltyseconds ?? 120));
-    $freeze    = max(0, (int) ($data->examguard_freezetimermax ?? 600));
-    $watermark = (int) ($data->examguard_watermark ?? 0);
-    $rawlang   = (string) ($data->examguard_lang ?? 'id');
-    $lang      = in_array($rawlang, ['id', 'en', 'auto'], true) ? $rawlang : 'id';
+    $now        = time();
+    $enabled    = (int) ($data->examguard_enabled ?? 0);
+    $penalty    = max(1, (int) ($data->examguard_penaltyseconds ?? 120));
+    $maxpenalty = max($penalty, (int) ($data->examguard_maxpenaltyseconds ?? 600));
+    $freeze     = max(0, (int) ($data->examguard_freezetimermax ?? 600));
+    $watermark  = (int) ($data->examguard_watermark ?? 0);
+    $rawlang    = (string) ($data->examguard_lang ?? 'id');
+    $lang       = in_array($rawlang, ['id', 'en', 'auto'], true) ? $rawlang : 'id';
 
     $existing = $DB->get_record('local_examguard_quiz', ['quizid' => $quizid]);
     if ($existing) {
-        $existing->enabled        = $enabled;
-        $existing->penaltyseconds = $penalty;
-        $existing->freezetimermax = $freeze;
-        $existing->watermark      = $watermark;
-        $existing->lang           = $lang;
-        $existing->timemodified   = $now;
+        $existing->enabled           = $enabled;
+        $existing->penaltyseconds    = $penalty;
+        $existing->maxpenaltyseconds = $maxpenalty;
+        $existing->freezetimermax    = $freeze;
+        $existing->watermark         = $watermark;
+        $existing->lang              = $lang;
+        $existing->timemodified      = $now;
         $DB->update_record('local_examguard_quiz', $existing);
     } else {
         $DB->insert_record('local_examguard_quiz', (object) [
-            'quizid'         => $quizid,
-            'enabled'        => $enabled,
-            'penaltyseconds' => $penalty,
-            'freezetimermax' => $freeze,
-            'watermark'      => $watermark,
-            'lang'           => $lang,
-            'timecreated'    => $now,
-            'timemodified'   => $now,
+            'quizid'            => $quizid,
+            'enabled'           => $enabled,
+            'penaltyseconds'    => $penalty,
+            'maxpenaltyseconds' => $maxpenalty,
+            'freezetimermax'    => $freeze,
+            'watermark'         => $watermark,
+            'lang'              => $lang,
+            'timecreated'       => $now,
+            'timemodified'      => $now,
         ]);
     }
 

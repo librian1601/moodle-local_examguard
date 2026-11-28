@@ -41,7 +41,9 @@ $string['defaultlang_desc'] = 'Bahasa bawaan untuk peringatan, layar putih dan p
 $string['applytoteachers'] = 'Pantau juga preview guru';
 $string['applytoteachers_desc'] = 'Bila diaktifkan, attempt preview milik guru juga dipantau. Guru tidak lagi dapat mencoba kuis secara normal.';
 $string['penaltyseconds'] = 'Durasi hukuman (detik)';
-$string['penaltyseconds_desc'] = 'Lama layar putih mengunci halaman setelah pelanggaran. Bawaan 120 detik.';
+$string['penaltyseconds_desc'] = 'Lama layar putih mengunci halaman untuk satu kali pelanggaran. Bawaan 120 detik.';
+$string['maxpenaltyseconds'] = 'Batas maksimum penalti aktif (detik)';
+$string['maxpenaltyseconds_desc'] = 'Batas atas mutlak hitungan mundur layar putih pada satu waktu (bahkan jika siswa berulang kali memodifikasi overlay). Berbeda dari durasi hukuman per pelanggaran dan batas pembekuan timer kuis kumulatif. Bawaan 600 detik.';
 $string['dedupewindow'] = 'Jeda antar pencatatan pelanggaran (detik)';
 $string['dedupewindow_desc'] = 'Jarak minimal antar pelanggaran yang dicatat. Mencegah event blur dan visibilitychange dihitung dua kali untuk satu kali pindah tab.';
 $string['freezetimer'] = 'Bekukan timer kuis selama hukuman';
@@ -121,6 +123,7 @@ $string['eventtype_pageload'] = 'Halaman dimuat ulang saat hukuman';
 $string['eventtype_overlayremoved'] = 'Layar hukuman dimodifikasi';
 $string['eventtype_devtools'] = 'Pintasan developer tools';
 $string['eventtype_manualunlock'] = 'Dibuka manual';
+$string['eventtype_manualreset'] = 'Penalti di-reset oleh pengawas';
 $string['eventtype_unknown'] = 'Lainnya';
 
 // JavaScript strings (disuntikkan sebagai JSON ke halaman pengerjaan).
@@ -152,7 +155,9 @@ $string['quizsettingsheading_desc'] = 'Pengaturan ExamGuard per kuis. Nilai ini 
 $string['quiz_enabled']             = 'Aktifkan ExamGuard untuk kuis ini';
 $string['quiz_enabled_desc']        = 'Jika dimatikan, ExamGuard sama sekali tidak aktif untuk kuis ini meskipun pengaturan global menyalakannya.';
 $string['quiz_penaltyseconds']      = 'Durasi hukuman (detik)';
-$string['quiz_penaltyseconds_desc'] = 'Lama layar putih mengunci halaman setelah pelanggaran pada kuis ini. Bawaan 120 detik.';
+$string['quiz_penaltyseconds_desc'] = 'Lama layar putih mengunci halaman untuk satu kali pelanggaran pada kuis ini. Bawaan 120 detik.';
+$string['quiz_maxpenaltyseconds']      = 'Batas maksimum penalti aktif (detik)';
+$string['quiz_maxpenaltyseconds_desc'] = 'Batas atas mutlak durasi kunci layar putih pada satu waktu untuk kuis ini (minimal sama dengan Durasi hukuman). Terpisah dari Batas total detik pembekuan per attempt. Bawaan 600 detik.';
 $string['quiz_freezetimermax']      = 'Batas total detik pembekuan per attempt';
 $string['quiz_freezetimermax_desc'] = 'Batas maksimal tambahan waktu ujian yang boleh dikumpulkan siswa dari hukuman dalam satu attempt. Isi 0 untuk tanpa batas.';
 $string['quiz_watermark']           = 'Tampilkan watermark pelacak';
@@ -161,6 +166,29 @@ $string['quiz_lang']                = 'Bahasa tampilan';
 $string['quiz_lang_desc']           = 'Bahasa yang digunakan untuk layar putih, countdown, peringatan dan pesan keamanan pada kuis ini. Pilih Bahasa Indonesia, English, atau ikuti bahasa Moodle.';
 $string['quiz_lang_auto']           = 'Ikuti bahasa Moodle';
 $string['domswap_placeholder']      = '[Akses Soal Ditutup Sementara oleh Sistem Keamanan Ujian - Kembalikan Fokus ke Layar Ujian]';
+$string['duplicatetab_title']       = 'Ujian Sedang Dibuka di Tab Lain';
+$string['duplicatetab_desc']        = 'Anda sudah membuka ujian ini di tab lain. Silakan kembali ke tab ujian yang sedang berjalan, atau tutup tab tersebut lalu klik tombol di bawah untuk melanjutkan di sini.';
+$string['duplicatetab_takeover']    = 'Lanjutkan di Tab Ini';
+
+// Tab navigasi sekunder kuis & panel pengawas terkunci aktif.
+$string['tab_examguard']                  = 'ExamGuard';
+$string['activelocks_heading']            = 'Sedang Terkunci Saat Ini';
+$string['activelocks_badge']              = 'Sedang Terkunci: {$a} siswa';
+$string['activelocks_empty']              = 'Tidak ada siswa yang sedang terkunci saat ini.';
+$string['activelocks_search_placeholder'] = 'Cari nama siswa, username, email atau NIS...';
+$string['activelocks_search_btn']         = 'Cari';
+$string['activelocks_refresh']            = 'Muat Ulang';
+$string['th_remaining']                   = 'Sisa waktu penalti';
+$string['th_totalviolations']             = 'Total pelanggaran';
+$string['resetpenalty']                   = 'Reset Penalty';
+$string['resetpenalty_confirm']           = 'Reset penalti aktif untuk {$a}? Jumlah pelanggaran dan riwayat audit tetap disimpan.';
+$string['resetpenalty_done']              = 'Penalti untuk {$a} berhasil di-reset. Riwayat pelanggaran tetap terjaga.';
+$string['resetpenalty_failed']            = 'Penalti tidak dapat di-reset karena tidak ada penalti aktif pada attempt ini.';
+$string['resetall_btn']                   = 'Reset Semua Penalti Aktif';
+$string['resetall_confirm']               = 'Reset semua {$a} penalti aktif pada tampilan ini? Jumlah pelanggaran dan riwayat log tetap tersimpan.';
+$string['resetall_done']                  = 'Berhasil me-reset {$a} penalti aktif. Riwayat pelanggaran tetap terjaga.';
+$string['resetall_none']                  = 'Tidak ada penalti aktif yang perlu di-reset.';
+$string['historylogs_heading']            = 'Riwayat Pelanggaran & Audit';
 
 // Privacy API.
 $string['privacy:metadata'] = 'ExamGuard menyimpan peristiwa pelanggaran dan timer hukuman untuk setiap attempt kuis.';

@@ -51,6 +51,10 @@ if ($hassiteconfig) {
         get_string('penaltyseconds', 'local_examguard'), get_string('penaltyseconds_desc', 'local_examguard'),
         120, PARAM_INT));
 
+    $settings->add(new admin_setting_configtext('local_examguard/maxpenaltyseconds',
+        get_string('maxpenaltyseconds', 'local_examguard'), get_string('maxpenaltyseconds_desc', 'local_examguard'),
+        600, PARAM_INT));
+
     $settings->add(new admin_setting_configtext('local_examguard/dedupewindow',
         get_string('dedupewindow', 'local_examguard'), get_string('dedupewindow_desc', 'local_examguard'),
         3, PARAM_INT));

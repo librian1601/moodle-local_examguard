@@ -98,7 +98,7 @@ class ajax_handler {
                     $timeleft = penalty_manager::get_time_left((int) $cm->id, $attempt, $quiz);
 
                     self::respond(200, self::payload('violation', $state, time(), $result->deduped,
-                        $timeleft, $quiz, false));
+                        $timeleft, $quiz, false, !empty($result->ignored_while_locked)));
                     break;
 
                 case 'pageload':
@@ -206,7 +206,7 @@ class ajax_handler {
      * @return array
      */
     protected static function payload(string $action, ?\stdClass $state, int $now, bool $deduped,
-            ?int $timeleft, \stdClass $quiz, bool $finished): array {
+            ?int $timeleft, \stdClass $quiz, bool $finished, bool $ignoredwhilelocked = false): array {
         $penaltyuntil = $state ? (int) $state->penaltyuntil : 0;
         $remaining = ($state && !$finished) ? max(0, $penaltyuntil - $now) : 0;
         $activeuntil = ($remaining > 0) ? $penaltyuntil : 0;
@@ -220,6 +220,7 @@ class ajax_handler {
             'frozenseconds' => $state ? (int) $state->frozenseconds : 0,
             'servernow' => $now,
             'deduped' => $deduped,
+            'ignored_while_locked' => $ignoredwhilelocked,
             'timelimit' => (int) $quiz->timelimit,
             'timeleft' => $timeleft,
             'locked' => $remaining > 0,

@@ -141,12 +141,16 @@ class logs_table extends \table_sql {
             $params['filterquizid'] = (int) $this->filters['quizid'];
         }
         if (!empty($this->filters['search'])) {
-            $search = '%' . $this->filters['search'] . '%';
+            $search = '%' . $DB->sql_like_escape(trim($this->filters['search'])) . '%';
             $where .= ' AND (' . $DB->sql_like('u.username', ':searchuser', false)
                 . ' OR ' . $DB->sql_like($DB->sql_fullname('u.firstname', 'u.lastname'), ':searchname', false)
+                . ' OR ' . $DB->sql_like('u.email', ':searchemail', false)
+                . ' OR ' . $DB->sql_like('u.idnumber', ':searchidnumber', false)
                 . ')';
             $params['searchuser'] = $search;
             $params['searchname'] = $search;
+            $params['searchemail'] = $search;
+            $params['searchidnumber'] = $search;
         }
 
         return [$where, $params];
@@ -318,29 +322,61 @@ class logs_table extends \table_sql {
             return '';
         }
 
+        $cmid = isset($this->filters['cmid']) ? (int) $this->filters['cmid'] : 0;
         $courseid = isset($this->filters['courseid']) ? (int) $this->filters['courseid'] : 0;
+        $quizid = isset($this->filters['quizid']) ? (int) $this->filters['quizid'] : 0;
+        $search = isset($this->filters['search']) ? (string) $this->filters['search'] : '';
+        $q = isset($this->filters['q']) ? (string) $this->filters['q'] : '';
+
+        $studentname = fullname($row);
+        $confirmmsg = get_string('resetpenalty_confirm', 'local_examguard', $studentname);
 
         $form = \html_writer::start_tag('form', [
             'method' => 'post',
             'action' => new \moodle_url('/local/examguard/index.php'),
             'class' => 'd-inline',
+            'onsubmit' => 'return confirm(' . json_encode($confirmmsg) . ');',
         ]);
         $form .= \html_writer::empty_tag('input', [
             'type' => 'hidden', 'name' => 'sesskey', 'value' => sesskey(),
         ]);
         $form .= \html_writer::empty_tag('input', [
-            'type' => 'hidden', 'name' => 'action', 'value' => 'unlock',
+            'type' => 'hidden', 'name' => 'action', 'value' => 'resetpenalty',
         ]);
         $form .= \html_writer::empty_tag('input', [
-            'type' => 'hidden', 'name' => 'logid', 'value' => (int) $row->id,
+            'type' => 'hidden', 'name' => 'attemptid', 'value' => (int) $row->attemptid,
         ]);
         $form .= \html_writer::empty_tag('input', [
-            'type' => 'hidden', 'name' => 'courseid', 'value' => $courseid,
+            'type' => 'hidden', 'name' => 'userid', 'value' => (int) $row->userid,
         ]);
+        if ($cmid > 0) {
+            $form .= \html_writer::empty_tag('input', [
+                'type' => 'hidden', 'name' => 'cmid', 'value' => $cmid,
+            ]);
+        } else if ($courseid > 0) {
+            $form .= \html_writer::empty_tag('input', [
+                'type' => 'hidden', 'name' => 'courseid', 'value' => $courseid,
+            ]);
+        }
+        if (!$cmid && $quizid > 0) {
+            $form .= \html_writer::empty_tag('input', [
+                'type' => 'hidden', 'name' => 'quizid', 'value' => $quizid,
+            ]);
+        }
+        if ($search !== '') {
+            $form .= \html_writer::empty_tag('input', [
+                'type' => 'hidden', 'name' => 'search', 'value' => $search,
+            ]);
+        }
+        if ($q !== '') {
+            $form .= \html_writer::empty_tag('input', [
+                'type' => 'hidden', 'name' => 'q', 'value' => $q,
+            ]);
+        }
         $form .= \html_writer::empty_tag('input', [
             'type' => 'submit',
-            'class' => 'btn btn-secondary btn-sm',
-            'value' => get_string('unlock', 'local_examguard'),
+            'class' => 'btn btn-warning btn-sm',
+            'value' => get_string('resetpenalty', 'local_examguard'),
         ]);
         $form .= \html_writer::end_tag('form');
 

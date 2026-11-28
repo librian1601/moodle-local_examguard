@@ -54,8 +54,14 @@ class penalty_manager {
     /** @var string Event type: a teacher removed the penalty manually. */
     const EVENT_MANUALUNLOCK = 'manualunlock';
 
+    /** @var string Event type: a teacher/proctor reset an active penalty while keeping audit history. */
+    const EVENT_MANUALRESET = 'manualreset';
+
     /** @var int Default penalty duration in seconds. */
     const DEFAULT_PENALTYSECONDS = 120;
+
+    /** @var int Default hard cap for maximum active penalty screen duration in seconds. */
+    const DEFAULT_MAXPENALTYSECONDS = 600;
 
     /** @var int Default duplicate event window in seconds. */
     const DEFAULT_DEDUPEWINDOW = 3;
@@ -134,6 +140,35 @@ class penalty_manager {
         }
 
         return $cfg;
+    }
+
+    /**
+     * Determine whether the ExamGuard tab should appear in a quiz's secondary navigation.
+     *
+     * Shown if ExamGuard is enabled for the quiz OR if historical logs/penalties exist.
+     *
+     * @param int $quizid quiz id.
+     * @return bool
+     */
+    public static function should_show_quiz_tab(int $quizid): bool {
+        global $DB;
+
+        if ($quizid <= 0) {
+            return false;
+        }
+
+        $cfg = $DB->get_record('local_examguard_quiz', ['quizid' => $quizid]);
+        if ($cfg && (int) $cfg->enabled === 1) {
+            return true;
+        }
+        if ($DB->record_exists('local_examguard_logs', ['quizid' => $quizid])) {
+            return true;
+        }
+        if ($DB->record_exists('local_examguard_penalty', ['quizid' => $quizid])) {
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -240,6 +275,7 @@ class penalty_manager {
             self::EVENT_OVERLAYREMOVED,
             self::EVENT_DEVTOOLS,
             self::EVENT_MANUALUNLOCK,
+            self::EVENT_MANUALRESET,
         ];
 
         return in_array($eventtype, $allowed, true) ? $eventtype : self::EVENT_TABSWITCH;
@@ -302,34 +338,54 @@ class penalty_manager {
         }
 
         $penaltyseconds = max(1, (int) $quizcfg->penaltyseconds);
-        $dedupewindow   = max(0, self::setting_int('dedupewindow', self::DEFAULT_DEDUPEWINDOW));
+        $maxpenalty = max(
+            $penaltyseconds,
+            (int) ($quizcfg->maxpenaltyseconds ?? self::setting_int('maxpenaltyseconds', self::DEFAULT_MAXPENALTYSECONDS))
+        );
+        $dedupewindow = max(0, self::setting_int('dedupewindow', self::DEFAULT_DEDUPEWINDOW));
 
         $cm = get_coursemodule_from_instance('quiz', $quiz->id, $quiz->course, false, IGNORE_MISSING);
         $cmid = $cm ? (int) $cm->id : 0;
 
         $state = self::get_state($attemptid, $userid);
 
-        // Browser blur and visibilitychange fire together for a single tab switch.
-        if ($state && (int) $state->penaltyuntil > $now && ($now - (int) $state->lastpenalty) <= $dedupewindow) {
-            return self::build_result($state, $now, true);
+        // LOCK-PAUSE RULE: While a penalty is actively locking the screen, ignore normal
+        // focus/tab violations so idle tabs or background tabs cannot snowball the lock.
+        // Only DevTools overlay tampering ('overlayremoved') is allowed to extend while locked.
+        if ($state && (int) $state->penaltyuntil > $now) {
+            if ($eventtype !== self::EVENT_OVERLAYREMOVED) {
+                return self::build_result($state, $now, true, true);
+            }
+            if (($now - (int) $state->lastpenalty) <= $dedupewindow) {
+                return self::build_result($state, $now, true, false);
+            }
         }
 
         $violationcount = ($state ? (int) $state->violationcount : 0) + 1;
-        $penaltyuntil = max($now, $state ? (int) $state->penaltyuntil : $now) + $penaltyseconds;
+        $olduntil = $state ? (int) $state->penaltyuntil : 0;
+        $baseuntil = max($now, $olduntil);
+        $rawnewuntil = $baseuntil + $penaltyseconds;
+
+        // HARD CAP MAX PENALTY SCREEN: Penalty deadline may never exceed now + maxpenaltyseconds.
+        $maxuntil = $now + $maxpenalty;
+        $penaltyuntil = min($rawnewuntil, $maxuntil);
+        $actualadded = max(0, $penaltyuntil - $baseuntil);
+
         $frozenseconds = $state ? (int) $state->frozenseconds : 0;
 
         $granted = 0;
-        // Use per-quiz freezetimermax; a value of 0 means unlimited.
+        // Use per-quiz freezetimermax (0 = unlimited) synced with actualAdded penalty time.
         $maxfrozen = (int) $quizcfg->freezetimermax;
-        if (!empty($quiz->timelimit) && self::setting_bool('freezetimer', true)
+        if ($actualadded > 0 && !empty($quiz->timelimit) && self::setting_bool('freezetimer', true)
                 && (string) $attempt->state === 'inprogress') {
-            // A maximum of 0 means unlimited, otherwise respect the remaining allowance.
-            $room = ($maxfrozen > 0) ? max(0, $maxfrozen - $frozenseconds) : $penaltyseconds;
-            $granted = (int) min($penaltyseconds, $room);
+            $room = ($maxfrozen > 0) ? max(0, $maxfrozen - $frozenseconds) : $actualadded;
+            $granted = (int) min($actualadded, $room);
             $frozenseconds += $granted;
         }
 
         $extra = self::clean_extra($extra);
+        $extra['actual_added'] = $actualadded;
+        $extra['capped'] = ($rawnewuntil > $maxuntil) ? 1 : 0;
         $extra['frozen_granted'] = $granted;
         $extra['frozen_total'] = $frozenseconds;
 
@@ -450,17 +506,20 @@ class penalty_manager {
      * @param \stdClass $state penalty state row.
      * @param int $now server time.
      * @param bool $deduped whether the event was ignored as a duplicate.
+     * @param bool $ignoredwhilelocked whether the event was ignored because a penalty is already active.
      * @return \stdClass
      */
-    protected static function build_result(\stdClass $state, int $now, bool $deduped): \stdClass {
+    protected static function build_result(\stdClass $state, int $now, bool $deduped,
+            bool $ignoredwhilelocked = false): \stdClass {
         $remaining = max(0, (int) $state->penaltyuntil - $now);
         return (object) [
-            'violationcount' => (int) $state->violationcount,
-            'penaltyuntil'   => ($remaining > 0) ? (int) $state->penaltyuntil : 0,
-            'remaining'      => $remaining,
-            'frozenseconds'  => (int) $state->frozenseconds,
-            'servernow'      => $now,
-            'deduped'        => $deduped,
+            'violationcount'       => (int) $state->violationcount,
+            'penaltyuntil'         => ($remaining > 0) ? (int) $state->penaltyuntil : 0,
+            'remaining'            => $remaining,
+            'frozenseconds'        => (int) $state->frozenseconds,
+            'servernow'            => $now,
+            'deduped'              => $deduped,
+            'ignored_while_locked' => $ignoredwhilelocked,
         ];
     }
 
@@ -509,7 +568,170 @@ class penalty_manager {
     }
 
     /**
+     * Fetch all currently locked attempts (penaltyuntil > time()) with user and quiz info.
+     *
+     * Supports filtering by courseid, quizid and case-insensitive search against
+     * full name, username, email or idnumber.
+     *
+     * @param int $courseid optional course filter (0 = all).
+     * @param int $quizid optional quiz filter (0 = all).
+     * @param string $search optional text search.
+     * @return array list of active lock records.
+     */
+    public static function get_active_locked_penalties(int $courseid = 0, int $quizid = 0, string $search = ''): array {
+        global $DB;
+
+        $now = time();
+        $where = 'p.penaltyuntil > :now';
+        $params = ['now' => $now];
+
+        if ($courseid > 0) {
+            $where .= ' AND p.courseid = :courseid';
+            $params['courseid'] = $courseid;
+        }
+        if ($quizid > 0) {
+            $where .= ' AND p.quizid = :quizid';
+            $params['quizid'] = $quizid;
+        }
+        $search = trim($search);
+        if ($search !== '') {
+            $like = '%' . $DB->sql_like_escape($search) . '%';
+            $where .= ' AND ('
+                . $DB->sql_like($DB->sql_fullname('u.firstname', 'u.lastname'), ':qfullname', false)
+                . ' OR ' . $DB->sql_like('u.username', ':qusername', false)
+                . ' OR ' . $DB->sql_like('u.email', ':qemail', false)
+                . ' OR ' . $DB->sql_like('u.idnumber', ':qidnumber', false)
+                . ')';
+            $params['qfullname'] = $like;
+            $params['qusername'] = $like;
+            $params['qemail'] = $like;
+            $params['qidnumber'] = $like;
+        }
+
+        $sql = "SELECT p.id, p.attemptid, p.userid, p.courseid, p.cmid, p.quizid,
+                       p.violationcount, p.penaltyuntil, p.frozenseconds, p.lastpenalty,
+                       u.firstname, u.lastname, u.firstnamephonetic, u.lastnamephonetic,
+                       u.middlename, u.alternatename, u.username, u.email, u.idnumber,
+                       q.name AS quizname, c.fullname AS coursename
+                  FROM {local_examguard_penalty} p
+                  JOIN {user} u ON u.id = p.userid
+                  JOIN {quiz} q ON q.id = p.quizid
+                  JOIN {course} c ON c.id = p.courseid
+                 WHERE $where
+              ORDER BY p.penaltyuntil DESC, u.lastname ASC, u.firstname ASC";
+
+        $records = $DB->get_records_sql($sql, $params);
+        $result = [];
+        foreach ($records as $record) {
+            $record->remaining = max(0, (int) $record->penaltyuntil - $now);
+            $result[] = $record;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Reset an active penalty for an attempt while preserving violationcount, frozenseconds and historical logs.
+     *
+     * Sets penaltyuntil = 0, removes the user_preferences mirror, and appends one
+     * 'manualreset' audit log row with the preserved historical violationcount.
+     *
+     * @param int $attemptid quiz attempt id.
+     * @param int $userid student user id.
+     * @param int $actorid proctor/teacher user id performing the reset.
+     * @return bool true if a penalty row was reset.
+     */
+    public static function reset_attempt_penalty(int $attemptid, int $userid, int $actorid): bool {
+        global $DB;
+
+        if ($attemptid <= 0 || $userid <= 0) {
+            return false;
+        }
+
+        $now = time();
+        $state = self::get_state($attemptid, $userid);
+        if (!$state || (int) $state->penaltyuntil <= $now) {
+            return false;
+        }
+
+        $transaction = $DB->start_delegated_transaction();
+
+        // Preserve violationcount and frozenseconds untouched for audit history.
+        $state->penaltyuntil = 0;
+        $state->timemodified = $now;
+        $DB->update_record('local_examguard_penalty', $state);
+
+        $resetlog = (object) [
+            'userid' => (int) $state->userid,
+            'courseid' => (int) $state->courseid,
+            'cmid' => (int) $state->cmid,
+            'quizid' => (int) $state->quizid,
+            'attemptid' => (int) $state->attemptid,
+            'eventtype' => self::EVENT_MANUALRESET,
+            'violationcount' => (int) $state->violationcount,
+            'penaltyuntil' => 0,
+            'ipaddress' => getremoteaddr(),
+            'useragent' => '',
+            'extra' => json_encode([
+                'actorid' => $actorid,
+                'action' => 'manualreset',
+            ], JSON_UNESCAPED_SLASHES),
+            'timecreated' => $now,
+        ];
+        $DB->insert_record('local_examguard_logs', $resetlog);
+
+        $DB->commit_delegated_transaction($transaction);
+
+        // Remove the user_preferences mirror for this attempt.
+        $prefname = 'local_examguard_penalty_' . $attemptid;
+        try {
+            unset_user_preference($prefname, $userid);
+        } catch (\Throwable $e) {
+            debugging('local_examguard: could not unset penalty preference: ' . $e->getMessage(), DEBUG_DEVELOPER);
+        }
+        $DB->delete_records('user_preferences', ['userid' => $userid, 'name' => $prefname]);
+
+        return true;
+    }
+
+    /**
+     * Reset all currently active penalties matching the optional courseid/quizid filter.
+     *
+     * @param int $courseid optional course filter (0 = all).
+     * @param int $quizid optional quiz filter (0 = all).
+     * @param int $actorid proctor/teacher user id performing the reset.
+     * @return int number of attempts reset.
+     */
+    public static function reset_all_active_penalties(int $courseid = 0, int $quizid = 0, int $actorid = 0): int {
+        global $DB;
+
+        $where = 'penaltyuntil > :now';
+        $params = ['now' => time()];
+        if ($courseid > 0) {
+            $where .= ' AND courseid = :courseid';
+            $params['courseid'] = $courseid;
+        }
+        if ($quizid > 0) {
+            $where .= ' AND quizid = :quizid';
+            $params['quizid'] = $quizid;
+        }
+
+        $rows = $DB->get_records_select('local_examguard_penalty', $where, $params, '', 'id, attemptid, userid');
+        $count = 0;
+        foreach ($rows as $row) {
+            if (self::reset_attempt_penalty((int) $row->attemptid, (int) $row->userid, $actorid)) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
      * Remove an active penalty after a teacher confirmed it in the report page.
+     *
+     * Delegates to reset_attempt_penalty() so violation history and audit logging
+     * remain consistent across all reset entry points.
      *
      * @param int $logid id of a log row that identifies the attempt.
      * @param int $teacherid id of the teacher performing the action.
@@ -523,39 +745,7 @@ class penalty_manager {
             return false;
         }
 
-        $now = time();
-        $state = self::get_state((int) $log->attemptid, (int) $log->userid);
-        if (!$state || (int) $state->penaltyuntil <= $now) {
-            return false;
-        }
-
-        $transaction = $DB->start_delegated_transaction();
-
-        $state->penaltyuntil = $now;
-        $state->timemodified = $now;
-        $DB->update_record('local_examguard_penalty', $state);
-
-        $unlocklog = (object) [
-            'userid' => (int) $log->userid,
-            'courseid' => (int) $log->courseid,
-            'cmid' => (int) $log->cmid,
-            'quizid' => (int) $log->quizid,
-            'attemptid' => (int) $log->attemptid,
-            'eventtype' => self::EVENT_MANUALUNLOCK,
-            'violationcount' => (int) $state->violationcount,
-            'penaltyuntil' => $now,
-            'ipaddress' => getremoteaddr(),
-            'useragent' => '',
-            'extra' => json_encode(['unlockedby' => $teacherid], JSON_UNESCAPED_SLASHES),
-            'timecreated' => $now,
-        ];
-        $DB->insert_record('local_examguard_logs', $unlocklog);
-
-        $DB->commit_delegated_transaction($transaction);
-
-        self::write_preference((int) $log->attemptid, (int) $log->userid, $state);
-
-        return true;
+        return self::reset_attempt_penalty((int) $log->attemptid, (int) $log->userid, $teacherid);
     }
 
     /**

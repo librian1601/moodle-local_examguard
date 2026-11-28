@@ -29,6 +29,11 @@ defined('MOODLE_INTERNAL') || die();
 
 $callbacks = [
     [
+        'hook' => \core\hook\output\before_http_headers::class,
+        'callback' => [\local_examguard\hook_listener::class, 'promote_quiz_secondary_tab'],
+        'priority' => 100,
+    ],
+    [
         'hook' => \core\hook\output\before_standard_head_html_generation::class,
         'callback' => [\local_examguard\hook_listener::class, 'inject_head'],
         'priority' => 100,

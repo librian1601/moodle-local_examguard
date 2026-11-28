@@ -50,6 +50,90 @@ class hook_listener {
     protected static $context = null;
 
     /**
+     * Hook callback for core\hook\output\before_http_headers.
+     *
+     * Promotes the ExamGuard secondary navigation tab on quiz module pages so it
+     * stays visible alongside Quiz | Settings | Questions | Results | Question bank
+     * instead of being pushed into the "More" dropdown by MAX_DISPLAYED_NAV_NODES.
+     *
+     * @param \core\hook\output\before_http_headers $hook
+     */
+    public static function promote_quiz_secondary_tab(\core\hook\output\before_http_headers $hook): void {
+        global $PAGE;
+
+        if (CLI_SCRIPT || AJAX_SCRIPT || WS_SERVER) {
+            return;
+        }
+        try {
+            if (!$PAGE || !$PAGE->has_secondary_navigation()) {
+                return;
+            }
+            // Assign magic properties $PAGE->context and $PAGE->cm to local variables
+            // before testing because moodle_page lacks __isset() for magic getters.
+            $context = $PAGE->context;
+            $cm = $PAGE->cm;
+            if (!($context instanceof \context_module) || !$cm || $cm->modname !== 'quiz') {
+                return;
+            }
+            self::ensure_quiz_secondary_tab_visible($PAGE);
+        } catch (\Throwable $e) {
+            debugging('local_examguard: could not promote secondary tab: ' . $e->getMessage(), DEBUG_DEVELOPER);
+        }
+    }
+
+    /**
+     * Promote the ExamGuard node in $page->secondarynav out of the "More" menu
+     * and place it directly after the main quiz tabs (e.g. Question bank).
+     *
+     * @param \moodle_page $page Moodle page instance.
+     */
+    public static function ensure_quiz_secondary_tab_visible(\moodle_page $page): void {
+        $secondarynav = $page->secondarynav;
+        if (!$secondarynav) {
+            return;
+        }
+        $tab = $secondarynav->get('local_examguard_quizreport');
+        if (!$tab) {
+            return;
+        }
+
+        $isactive = !empty($tab->isactive)
+            || (method_exists($page, 'get_secondary_active_tab')
+                && $page->get_secondary_active_tab() === 'local_examguard_quizreport');
+
+        $beforekey = null;
+        foreach ($secondarynav->children as $child) {
+            if ($child->key !== 'local_examguard_quizreport' && !empty($child->forceintomoremenu)) {
+                $beforekey = $child->key;
+                break;
+            }
+        }
+
+        if ($beforekey !== null) {
+            $moved = clone $tab;
+            if (method_exists($moved, 'set_force_into_more_menu')) {
+                $moved->set_force_into_more_menu(false);
+            } else {
+                $moved->forceintomoremenu = false;
+            }
+            $tab->remove();
+            $secondarynav->add_node($moved, $beforekey);
+            if ($isactive) {
+                $moved->make_active();
+            }
+        } else {
+            if (method_exists($tab, 'set_force_into_more_menu')) {
+                $tab->set_force_into_more_menu(false);
+            } else {
+                $tab->forceintomoremenu = false;
+            }
+            if ($isactive) {
+                $tab->make_active();
+            }
+        }
+    }
+
+    /**
      * Hook callback for core\hook\output\before_standard_head_html_generation.
      *
      * @param \core\hook\output\before_standard_head_html_generation $hook
@@ -279,17 +363,20 @@ class hook_listener {
         $quizlang = lang_helper::resolve_lang($quizcfg->lang ?? null);
 
         $strings = [
-            'penaltyheading'      => lang_helper::get_string('js_penaltyheading', $quizlang),
-            'penaltybody'         => lang_helper::get_string('js_penaltybody', $quizlang),
-            'penaltycount'        => lang_helper::get_string('js_penaltycount', $quizlang),
-            'penaltyremaining'    => lang_helper::get_string('js_penaltyremaining', $quizlang),
-            'penaltyidentity'     => lang_helper::get_string('js_penaltyidentity', $quizlang, $identity),
-            'penaltynotice'       => lang_helper::get_string('js_penaltynotice', $quizlang),
-            'penaltytamper'       => lang_helper::get_string('js_penaltytamper', $quizlang),
-            'penaltychecking'     => lang_helper::get_string('js_penaltychecking', $quizlang),
-            'ajaxerror'           => lang_helper::get_string('js_ajaxerror', $quizlang),
-            'printblocked'        => lang_helper::get_string('js_printblocked', $quizlang),
-            'domswap_placeholder' => lang_helper::get_string('domswap_placeholder', $quizlang),
+            'penaltyheading'        => lang_helper::get_string('js_penaltyheading', $quizlang),
+            'penaltybody'           => lang_helper::get_string('js_penaltybody', $quizlang),
+            'penaltycount'          => lang_helper::get_string('js_penaltycount', $quizlang),
+            'penaltyremaining'      => lang_helper::get_string('js_penaltyremaining', $quizlang),
+            'penaltyidentity'       => lang_helper::get_string('js_penaltyidentity', $quizlang, $identity),
+            'penaltynotice'         => lang_helper::get_string('js_penaltynotice', $quizlang),
+            'penaltytamper'         => lang_helper::get_string('js_penaltytamper', $quizlang),
+            'penaltychecking'       => lang_helper::get_string('js_penaltychecking', $quizlang),
+            'ajaxerror'             => lang_helper::get_string('js_ajaxerror', $quizlang),
+            'printblocked'          => lang_helper::get_string('js_printblocked', $quizlang),
+            'domswap_placeholder'   => lang_helper::get_string('domswap_placeholder', $quizlang),
+            'duplicatetab_title'    => lang_helper::get_string('duplicatetab_title', $quizlang),
+            'duplicatetab_desc'     => lang_helper::get_string('duplicatetab_desc', $quizlang),
+            'duplicatetab_takeover' => lang_helper::get_string('duplicatetab_takeover', $quizlang),
         ];
 
         $traptext = get_config('local_examguard', 'traptext');
@@ -298,9 +385,16 @@ class hook_listener {
         }
 
         // Per-quiz values override the global defaults.
-        $penaltyseconds = max(1, (int) $quizcfg->penaltyseconds);
-        $freezetimermax = (int) $quizcfg->freezetimermax;
-        $watermark      = ((int) ($quizcfg->watermark ?? 1) === 1);
+        $penaltyseconds    = max(1, (int) $quizcfg->penaltyseconds);
+        $maxpenaltyseconds = max(
+            $penaltyseconds,
+            (int) ($quizcfg->maxpenaltyseconds ?? penalty_manager::setting_int(
+                'maxpenaltyseconds',
+                penalty_manager::DEFAULT_MAXPENALTYSECONDS
+            ))
+        );
+        $freezetimermax    = (int) $quizcfg->freezetimermax;
+        $watermark         = ((int) ($quizcfg->watermark ?? 1) === 1);
         // Freeze timer toggle remains a global setting; the per-quiz
         // freezetimermax (0 = unlimited) controls the cap, not the toggle.
         $freezetimer = penalty_manager::setting_bool('freezetimer', true);
@@ -328,20 +422,21 @@ class hook_listener {
             'timeleft'       => $context->timeleft,
             'watermark'      => $watermark,
             'settings'       => [
-                'lang'             => $quizlang,
-                'penaltyseconds'   => $penaltyseconds,
-                'dedupewindow'     => max(0, penalty_manager::setting_int('dedupewindow', 3)),
-                'trapenabled'      => penalty_manager::setting_bool('trapenabled', true),
-                'traptext'         => (string) $traptext,
-                'zwspenabled'      => penalty_manager::setting_bool('zwspenabled', true),
-                'blockcopy'        => penalty_manager::setting_bool('blockcopy', true),
-                'blockdevtools'    => penalty_manager::setting_bool('blockdevtools', false),
-                'watermark'        => $watermark,
-                'watermarkenabled' => $watermark,
-                'watermarkopacity' => max(0.02, min(0.6,
+                'lang'              => $quizlang,
+                'penaltyseconds'    => $penaltyseconds,
+                'maxpenaltyseconds' => $maxpenaltyseconds,
+                'dedupewindow'      => max(0, penalty_manager::setting_int('dedupewindow', 3)),
+                'trapenabled'       => penalty_manager::setting_bool('trapenabled', true),
+                'traptext'          => (string) $traptext,
+                'zwspenabled'       => penalty_manager::setting_bool('zwspenabled', true),
+                'blockcopy'         => penalty_manager::setting_bool('blockcopy', true),
+                'blockdevtools'     => penalty_manager::setting_bool('blockdevtools', false),
+                'watermark'         => $watermark,
+                'watermarkenabled'  => $watermark,
+                'watermarkopacity'  => max(0.02, min(0.6,
                     penalty_manager::setting_float('watermarkopacity', 0.12))),
-                'freezetimer'      => $freezetimer,
-                'freezetimermax'   => $freezetimermax,
+                'freezetimer'       => $freezetimer,
+                'freezetimermax'    => $freezetimermax,
             ],
             'strings'        => $strings,
         ];

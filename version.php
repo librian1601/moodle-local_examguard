@@ -25,8 +25,8 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component = 'local_examguard';
-$plugin->version   = 2026111505;
-$plugin->requires  = 2020061500; // Moodle 3.9.
-$plugin->supported = [39, 405];
+$plugin->version   = 2026112600;
+$plugin->requires  = 2024042200; // Moodle 4.4.
+$plugin->supported = [404, 405];
 $plugin->maturity  = MATURITY_STABLE;
-$plugin->release   = '1.1.4 (Build: 20261115)';
+$plugin->release   = '1.2.0 (Build: 20261126)';

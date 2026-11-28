@@ -41,7 +41,9 @@ $string['defaultlang_desc'] = 'Default language used for alerts, white-screen ov
 $string['applytoteachers'] = 'Protect teacher previews';
 $string['applytoteachers_desc'] = 'If enabled, teacher preview attempts are monitored as well. Teachers can no longer preview the quiz normally.';
 $string['penaltyseconds'] = 'Penalty duration (seconds)';
-$string['penaltyseconds_desc'] = 'How long the white screen lock stays on after a violation. Default 120 seconds.';
+$string['penaltyseconds_desc'] = 'How long the white screen lock stays on after a single violation. Default 120 seconds.';
+$string['maxpenaltyseconds'] = 'Maximum active penalty cap (seconds)';
+$string['maxpenaltyseconds_desc'] = 'Hard upper limit on the active white-screen lock countdown at any given moment (even if the student tampers with the overlay repeatedly). Different from the per-violation penalty duration and the cumulative quiz timer freeze cap. Default 600 seconds.';
 $string['dedupewindow'] = 'Duplicate event window (seconds)';
 $string['dedupewindow_desc'] = 'Minimum number of seconds between two recorded violations. Prevents the browser blur and visibilitychange events from counting twice for a single tab switch.';
 $string['freezetimer'] = 'Freeze quiz timer during penalty';
@@ -121,6 +123,7 @@ $string['eventtype_pageload'] = 'Attempt page reloaded during penalty';
 $string['eventtype_overlayremoved'] = 'Penalty screen tampered with';
 $string['eventtype_devtools'] = 'Developer tools shortcut';
 $string['eventtype_manualunlock'] = 'Manually unlocked';
+$string['eventtype_manualreset'] = 'Penalty reset by proctor';
 $string['eventtype_unknown'] = 'Other';
 
 // JavaScript strings (injected as JSON into the attempt page).
@@ -152,7 +155,9 @@ $string['quizsettingsheading_desc'] = 'Per-quiz ExamGuard settings. These overri
 $string['quiz_enabled']             = 'Enable ExamGuard for this quiz';
 $string['quiz_enabled_desc']        = 'When disabled, ExamGuard is completely inactive for this quiz regardless of the global setting.';
 $string['quiz_penaltyseconds']      = 'Penalty duration (seconds)';
-$string['quiz_penaltyseconds_desc'] = 'How long the white-screen lock stays on after a violation in this quiz. Default 120 seconds.';
+$string['quiz_penaltyseconds_desc'] = 'How long the white-screen lock stays on after a single violation in this quiz. Default 120 seconds.';
+$string['quiz_maxpenaltyseconds']      = 'Maximum active penalty cap (seconds)';
+$string['quiz_maxpenaltyseconds_desc'] = 'Hard upper limit for the white-screen lock countdown at any moment in this quiz (must be at least equal to Penalty duration). Separate from Maximum frozen seconds per attempt. Default 600 seconds.';
 $string['quiz_freezetimermax']      = 'Maximum frozen seconds per attempt';
 $string['quiz_freezetimermax_desc'] = 'Upper limit of extra quiz time a student may accumulate through penalties in one attempt. Set to 0 for no limit.';
 $string['quiz_watermark']           = 'Show traceable watermark';
@@ -161,6 +166,29 @@ $string['quiz_lang']                = 'Display language';
 $string['quiz_lang_desc']           = 'Language used for overlay, countdown, warnings and security messages in this quiz. Choose Bahasa Indonesia, English, or follow Moodle language.';
 $string['quiz_lang_auto']           = 'Follow Moodle language';
 $string['domswap_placeholder']      = '[Exam Access Temporarily Blocked by Security System - Return Focus to Exam Screen]';
+$string['duplicatetab_title']       = 'Quiz Already Open in Another Tab';
+$string['duplicatetab_desc']        = 'You already have this quiz open in another tab. Please return to the active exam tab, or close that tab and click the button below to continue here.';
+$string['duplicatetab_takeover']    = 'Continue in This Tab';
+
+// Quiz secondary navigation & proctor active locks panel.
+$string['tab_examguard']                  = 'ExamGuard';
+$string['activelocks_heading']            = 'Currently Locked Students';
+$string['activelocks_badge']              = 'Currently Locked: {$a} student(s)';
+$string['activelocks_empty']              = 'No students are currently locked.';
+$string['activelocks_search_placeholder'] = 'Search student name, username, email or ID number...';
+$string['activelocks_search_btn']         = 'Search';
+$string['activelocks_refresh']            = 'Refresh';
+$string['th_remaining']                   = 'Penalty remaining';
+$string['th_totalviolations']             = 'Total violations';
+$string['resetpenalty']                   = 'Reset Penalty';
+$string['resetpenalty_confirm']           = 'Reset the active penalty for {$a}? Their violation count and audit history will be preserved.';
+$string['resetpenalty_done']              = 'Penalty reset for {$a}. Violation history has been preserved.';
+$string['resetpenalty_failed']            = 'Could not reset penalty because no active penalty was found for this attempt.';
+$string['resetall_btn']                   = 'Reset All Active Penalties';
+$string['resetall_confirm']               = 'Reset all {$a} currently active penalties in this view? Historical violation counts and logs will remain intact.';
+$string['resetall_done']                  = 'Reset {$a} active penalty(s). Violation history has been preserved.';
+$string['resetall_none']                  = 'No active penalties were found to reset.';
+$string['historylogs_heading']            = 'Violation & Audit History';
 
 // Privacy API.
 $string['privacy:metadata'] = 'ExamGuard stores violation events and the penalty timer for each quiz attempt.';

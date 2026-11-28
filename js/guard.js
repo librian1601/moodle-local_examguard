@@ -38,9 +38,20 @@
     var strings = cfg.strings || {};
 
     var OVERLAY_ID = 'examguard-penalty-overlay';
+    var DUPLICATE_OVERLAY_ID = 'examguard-duplicatetab-overlay';
     var WATERMARK_ID = 'examguard-watermark';
     var STORAGE_PREFIX = 'examguard_penalty_';
     var ZWSP = '\u200B';
+
+    // Single-Tab Guard constants.
+    var TAB_ID = String(new Date().getTime()) + '_' + Math.random().toString(36).slice(2);
+    var TAB_LEASE_KEY = 'examguard_tab_lease_' + cfg.attemptid;
+    var TAB_SIGNAL_KEY = 'examguard_tab_signal_' + cfg.attemptid;
+    var TAB_CHANNEL_NAME = 'examguard_tab_' + cfg.attemptid;
+    var TAB_LEASE_REFRESH_MS = 1500;
+    var TAB_LEASE_STALE_MS = 4500;
+    var HEARTBEAT_INTERVAL_MS = 6000;
+    var UNLOCK_GRACE_MS = 1000;
 
     // Cross page navigation marker. It lives in sessionStorage, so the document that
     // Moodle loads after processattempt.php can still see that the student arrived
@@ -54,6 +65,10 @@
         + 'z-index:999999;display:flex;align-items:center;justify-content:center;padding:24px;'
         + 'box-sizing:border-box;overflow:auto;pointer-events:auto;opacity:1;visibility:visible;';
 
+    var DUPLICATE_OVERLAY_STYLE = 'position:fixed;left:0;top:0;width:100vw;height:100vh;background:#f8f9fa;'
+        + 'z-index:1000000;display:flex;align-items:center;justify-content:center;padding:24px;'
+        + 'box-sizing:border-box;overflow:auto;pointer-events:auto;opacity:1;visibility:visible;';
+
     var DEFAULTS = {
         penaltyheading: 'Ujian dikunci sementara',
         penaltybody: 'Sistem mendeteksi Anda meninggalkan halaman ujian.',
@@ -65,7 +80,10 @@
         penaltychecking: 'Memeriksa status...',
         ajaxerror: 'Tidak dapat menghubungi server.',
         printblocked: 'Mencetak soal ujian tidak diizinkan.',
-        domswap_placeholder: '[Akses Soal Ditutup Sementara oleh Sistem Keamanan Ujian - Kembalikan Fokus ke Layar Ujian]'
+        domswap_placeholder: '[Akses Soal Ditutup Sementara oleh Sistem Keamanan Ujian - Kembalikan Fokus ke Layar Ujian]',
+        duplicatetab_title: 'Ujian Sedang Dibuka di Tab Lain',
+        duplicatetab_desc: 'Anda sudah membuka ujian ini di tab lain. Silakan kembali ke tab ujian yang sedang berjalan, atau tutup tab tersebut lalu klik tombol di bawah untuk melanjutkan di sini.',
+        duplicatetab_takeover: 'Lanjutkan di Tab Ini'
     };
 
     /**
@@ -80,6 +98,10 @@
     var state = {
         locked: false,
         provisional: false,
+        isDuplicateTab: false,
+        focusViolationFired: false,
+        unlockGraceUntil: 0,
+        tabTakeoverTs: 0,
         penaltyuntil: cfg.penaltyuntil || 0,
         violationcount: cfg.violationcount || 0,
         frozenseconds: cfg.frozenseconds || 0,
@@ -91,6 +113,7 @@
         watchdogtimer: null,
         watermarktimer: null,
         focuswatchdogtimer: null,
+        tabLeaseTimer: null,
         timerfrozen: false,
         internalmutation: false,
         isNavigating: false,
@@ -107,6 +130,7 @@
         trace: []
     };
 
+    var tabChannel = null;
     var questionCache = [];
     var questionsHidden = false;
     var lostFocusConsecutiveCount = 0;
@@ -264,11 +288,25 @@
             }
             return;
         }
-        // Point 4: for 3 seconds after a quiz navigation click (on the dying page and
+        // Point 4: for 1 second after a quiz navigation click (on the dying page and
         // on the freshly redirected one) a violation must never reach the server.
         if (action === 'violation' && isNavigationWindow()) {
             if (typeof callback === 'function') {
                 callback(new Error('navigating'));
+            }
+            return;
+        }
+        // Duplicate tab must never send violation reports.
+        if (action === 'violation' && state.isDuplicateTab) {
+            if (typeof callback === 'function') {
+                callback(new Error('duplicatetab'));
+            }
+            return;
+        }
+        // Lock-pause: while screen is locked, only overlayremoved violations may be sent.
+        if (action === 'violation' && state.locked && (!extra || extra.eventtype !== 'overlayremoved')) {
+            if (typeof callback === 'function') {
+                callback(new Error('locked'));
             }
             return;
         }
@@ -403,6 +441,8 @@
         state.isUnloading = true;
         state.isNavigating = true;
         cancelPendingViolation();
+        stopTabLease();
+        releaseTabLease();
         setNavMarker();
         trace('unload');
         if (state.navigatingResetTimer) {
@@ -477,6 +517,272 @@
      */
     function isBootGrace() {
         return nowMs() < state.bootUntil;
+    }
+
+    /**
+     * True during the brief transition window right after an unlock or tab takeover.
+     *
+     * @return {boolean}
+     */
+    function isUnlockGrace() {
+        return nowMs() < state.unlockGraceUntil;
+    }
+
+    /**
+     * Read the current Single-Tab Guard lease object from localStorage.
+     *
+     * @return {Object|null}
+     */
+    function readTabLease() {
+        var raw = null;
+        try {
+            raw = window.localStorage.getItem(TAB_LEASE_KEY);
+        } catch (e) {
+            return null;
+        }
+        if (!raw) {
+            return null;
+        }
+        try {
+            return JSON.parse(raw);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    /**
+     * Write or refresh this tab's ownership lease in localStorage.
+     */
+    function writeTabLease() {
+        try {
+            window.localStorage.setItem(TAB_LEASE_KEY, JSON.stringify({
+                tabId: TAB_ID,
+                ts: nowMs()
+            }));
+        } catch (e) {
+            // Storage can be disabled, ignore.
+        }
+    }
+
+    /**
+     * Broadcast a Single-Tab Guard coordination message via BroadcastChannel and localStorage.
+     *
+     * @param {string} type signal type ('hello', 'alive', 'takeover', 'released').
+     */
+    function broadcastTabSignal(type) {
+        var msg = {
+            type: type,
+            tabId: TAB_ID,
+            ts: nowMs(),
+            nonce: Math.random().toString(36).slice(2)
+        };
+        if (tabChannel) {
+            try {
+                tabChannel.postMessage(msg);
+            } catch (e) {
+                // Ignore closed channel errors.
+            }
+        }
+        try {
+            window.localStorage.setItem(TAB_SIGNAL_KEY, JSON.stringify(msg));
+        } catch (e) {
+            // Storage can be disabled, ignore.
+        }
+    }
+
+    /**
+     * Release the tab lease on navigation/unload ONLY if this tab owns it.
+     */
+    function releaseTabLease() {
+        var lease = readTabLease();
+        if (lease && lease.tabId === TAB_ID) {
+            try {
+                window.localStorage.removeItem(TAB_LEASE_KEY);
+            } catch (e) {
+                // Storage can be disabled, ignore.
+            }
+            broadcastTabSignal('released');
+        }
+    }
+
+    /**
+     * Start periodic renewal of the active tab lease.
+     */
+    function startTabLease() {
+        writeTabLease();
+        if (state.tabLeaseTimer) {
+            window.clearInterval(state.tabLeaseTimer);
+        }
+        state.tabLeaseTimer = window.setInterval(function() {
+            if (!state.isDuplicateTab && !state.isUnloading) {
+                writeTabLease();
+            }
+        }, TAB_LEASE_REFRESH_MS);
+    }
+
+    /**
+     * Stop periodic renewal of the active tab lease.
+     */
+    function stopTabLease() {
+        if (state.tabLeaseTimer) {
+            window.clearInterval(state.tabLeaseTimer);
+            state.tabLeaseTimer = null;
+        }
+    }
+
+    /**
+     * Build and display the non-penalty Duplicate Tab overlay.
+     */
+    function createDuplicateTabOverlay() {
+        if (document.getElementById(DUPLICATE_OVERLAY_ID)) {
+            return;
+        }
+        state.internalmutation = true;
+
+        var overlay = document.createElement('div');
+        overlay.id = DUPLICATE_OVERLAY_ID;
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.style.cssText = DUPLICATE_OVERLAY_STYLE;
+
+        var box = document.createElement('div');
+        box.className = 'examguard-duplicatetab-box';
+        box.style.cssText = 'max-width:560px;width:100%;background:#ffffff;border:1px solid #dee2e6;'
+            + 'border-radius:10px;padding:32px 28px;text-align:center;box-shadow:0 8px 24px rgba(0,0,0,0.08);'
+            + 'font-family:Arial,Helvetica,sans-serif;color:#1d2125;';
+
+        var title = document.createElement('h2');
+        title.style.cssText = 'font-size:22px;margin:0 0 14px;color:#0f6cbf;font-weight:700;';
+        title.textContent = str('duplicatetab_title');
+        box.appendChild(title);
+
+        var desc = document.createElement('p');
+        desc.style.cssText = 'font-size:15px;line-height:1.6;margin:0 0 24px;color:#495057;';
+        desc.textContent = str('duplicatetab_desc');
+        box.appendChild(desc);
+
+        var btn = document.createElement('button');
+        btn.id = 'examguard-takeover-btn';
+        btn.type = 'button';
+        btn.className = 'btn btn-primary examguard-takeover-btn';
+        btn.style.cssText = 'background:#0f6cbf;color:#ffffff;border:none;border-radius:6px;'
+            + 'padding:10px 22px;font-size:15px;font-weight:600;cursor:pointer;';
+        btn.textContent = str('duplicatetab_takeover');
+        btn.addEventListener('click', function() {
+            takeOverTab();
+        });
+        box.appendChild(btn);
+
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+        state.internalmutation = false;
+    }
+
+    /**
+     * Remove the Duplicate Tab overlay if present.
+     */
+    function removeDuplicateTabOverlay() {
+        var overlay = document.getElementById(DUPLICATE_OVERLAY_ID);
+        if (overlay && overlay.parentNode) {
+            state.internalmutation = true;
+            overlay.parentNode.removeChild(overlay);
+            state.internalmutation = false;
+        }
+    }
+
+    /**
+     * Enter passive Duplicate Tab Mode: stop all violation reporting, hide questions,
+     * and show a non-penalty takeover screen.
+     */
+    function enterDuplicateTabMode() {
+        state.isDuplicateTab = true;
+        stopTabLease();
+        cancelPendingViolation();
+        stopHeartbeat();
+        lostFocusConsecutiveCount = 0;
+        state.focusViolationFired = false;
+        hideQuestions();
+        createDuplicateTabOverlay();
+        trace('dup-enter');
+    }
+
+    /**
+     * Take ownership of this attempt in the current tab and demote any other open tab.
+     */
+    function takeOverTab() {
+        state.isDuplicateTab = false;
+        state.tabTakeoverTs = nowMs();
+        state.unlockGraceUntil = nowMs() + UNLOCK_GRACE_MS;
+        lostFocusConsecutiveCount = 0;
+        state.focusViolationFired = false;
+        removeDuplicateTabOverlay();
+        startTabLease();
+        broadcastTabSignal('takeover');
+        trace('dup-takeover');
+
+        if (!state.locked) {
+            restoreQuestions(true);
+        }
+        heartbeat();
+    }
+
+    /**
+     * Process an incoming Single-Tab Guard signal from another tab.
+     *
+     * @param {Object} msg signal payload.
+     */
+    function handleTabSignal(msg) {
+        if (!msg || !msg.type || !msg.tabId || msg.tabId === TAB_ID) {
+            return;
+        }
+        if (msg.type === 'hello') {
+            if (!state.isDuplicateTab && !state.isUnloading) {
+                writeTabLease();
+                broadcastTabSignal('alive');
+            }
+        } else if (msg.type === 'alive') {
+            if (!state.tabTakeoverTs || (msg.ts && msg.ts > state.tabTakeoverTs)) {
+                enterDuplicateTabMode();
+            }
+        } else if (msg.type === 'takeover') {
+            if (!state.isDuplicateTab) {
+                enterDuplicateTabMode();
+            }
+        }
+    }
+
+    /**
+     * Initialise Single-Tab Guard using BroadcastChannel + localStorage lease/events.
+     *
+     * @return {boolean} true if this tab is the active owner, false if duplicate.
+     */
+    function initSingleTabGuard() {
+        if (!tabChannel && typeof window.BroadcastChannel === 'function') {
+            try {
+                tabChannel = new window.BroadcastChannel(TAB_CHANNEL_NAME);
+                tabChannel.onmessage = function(ev) {
+                    if (ev && ev.data) {
+                        handleTabSignal(ev.data);
+                    }
+                };
+            } catch (e) {
+                tabChannel = null;
+            }
+        }
+
+        var existingLease = readTabLease();
+        var otherActive = !!(existingLease && existingLease.tabId && existingLease.tabId !== TAB_ID
+            && (nowMs() - (existingLease.ts || 0)) < TAB_LEASE_STALE_MS);
+
+        if (otherActive) {
+            broadcastTabSignal('hello');
+            enterDuplicateTabMode();
+            return false;
+        }
+
+        startTabLease();
+        broadcastTabSignal('hello');
+        return true;
     }
 
     /**
@@ -575,7 +881,17 @@
      * @param {string} type event type.
      */
     function scheduleViolation(type) {
-        if (state.isNavigating || state.isUnloading) {
+        if (state.isDuplicateTab || state.isNavigating || state.isUnloading) {
+            return;
+        }
+        // LOCK-PAUSE: while locked, ignore all violations except overlay tampering.
+        if (state.locked && type !== 'overlayremoved') {
+            cancelPendingViolation();
+            return;
+        }
+        if (type !== 'overlayremoved' && isUnlockGrace()) {
+            trace('skip-unlock-grace:' + type);
+            cancelPendingViolation();
             return;
         }
         // tabswitch is NEVER subject to bootGrace: editor init never hides visibilityState.
@@ -601,7 +917,13 @@
         var delay = (type === 'tabswitch') ? 120 : 400;
         pendingViolationTimer = window.setTimeout(function() {
             pendingViolationTimer = null;
-            if (state.isNavigating || state.isUnloading) {
+            if (state.isDuplicateTab || state.isNavigating || state.isUnloading) {
+                return;
+            }
+            if (state.locked && type !== 'overlayremoved') {
+                return;
+            }
+            if (type !== 'overlayremoved' && isUnlockGrace()) {
                 return;
             }
             if (isNavigationWindow() || (type !== 'tabswitch' && isBootGrace())) {
@@ -718,12 +1040,37 @@
     }
 
     /**
-     * React to a penalty set by another tab of the same quiz attempt.
+     * React to Single-Tab Guard signals/leases and penalty mirrors from other tabs.
      *
      * @param {StorageEvent} event storage event.
      */
     function onStorage(event) {
-        if (!event || event.key !== storageKey() || !event.newValue) {
+        if (!event || !event.key) {
+            return;
+        }
+        if (event.key === TAB_SIGNAL_KEY && event.newValue) {
+            var sig;
+            try {
+                sig = JSON.parse(event.newValue);
+            } catch (e) {
+                return;
+            }
+            handleTabSignal(sig);
+            return;
+        }
+        if (event.key === TAB_LEASE_KEY && event.newValue) {
+            var lease;
+            try {
+                lease = JSON.parse(event.newValue);
+            } catch (e) {
+                return;
+            }
+            if (lease && lease.tabId && lease.tabId !== TAB_ID && !state.isDuplicateTab) {
+                enterDuplicateTabMode();
+            }
+            return;
+        }
+        if (event.key !== storageKey() || !event.newValue || state.isDuplicateTab) {
             return;
         }
         var data;
@@ -738,7 +1085,7 @@
             return;
         }
         window.setTimeout(function() {
-            if (!state.isNavigating && !state.isUnloading) {
+            if (!state.isNavigating && !state.isUnloading && !state.isDuplicateTab) {
                 heartbeat();
             }
         }, 800);
@@ -750,7 +1097,10 @@
      * @param {string} type event type.
      */
     function queuePending(type) {
-        if (state.isNavigating || state.isUnloading) {
+        if (state.isDuplicateTab || state.isNavigating || state.isUnloading) {
+            return;
+        }
+        if (state.locked && type !== 'overlayremoved') {
             return;
         }
         var key = storageKey() + '_queue';
@@ -775,6 +1125,9 @@
      * Re-send the oldest queued violation when the network is back.
      */
     function flushPending() {
+        if (state.isDuplicateTab) {
+            return;
+        }
         var key = storageKey() + '_queue';
         var queue = [];
         try {
@@ -785,7 +1138,7 @@
         if (!queue || !queue.length) {
             return;
         }
-        // Never replay a queued violation while a quiz page is being swapped.
+        // Never replay a queued violation while a quiz page is being swapped or already locked.
         if (state.isNavigating || state.isUnloading || isBootGrace() || isNavigationWindow()) {
             window.setTimeout(flushPending, 1200);
             return;
@@ -795,7 +1148,11 @@
         } catch (e) {
             // Storage can be disabled, ignore.
         }
-        sendAction('violation', {eventtype: queue[0].type || 'tabswitch'}, function(error, data) {
+        var queuedType = queue[0].type || 'tabswitch';
+        if (state.locked && queuedType !== 'overlayremoved') {
+            return;
+        }
+        sendAction('violation', {eventtype: queuedType}, function(error, data) {
             if (error || !data || data.status !== 'ok') {
                 return;
             }
@@ -1042,15 +1399,17 @@
 
     /**
      * Restore original question innerHTML once focus is returned and page is not locked.
+     *
+     * @param {boolean} force optional flag to restore immediately on unlock/takeover.
      */
-    function restoreQuestions() {
+    function restoreQuestions(force) {
         if (!questionsHidden) {
             return;
         }
-        if (state.locked) {
+        if (state.locked || state.isDuplicateTab) {
             return;
         }
-        if (typeof document.hasFocus === 'function' && !document.hasFocus()) {
+        if (!force && typeof document.hasFocus === 'function' && !document.hasFocus()) {
             return;
         }
         for (var i = 0; i < questionCache.length; i++) {
@@ -1232,12 +1591,12 @@
                     iframe.__examguardBlurBound = true;
                     win.addEventListener('blur', function() {
                         trace('iframe-blur');
-                        if (state.isNavigating || state.isUnloading) {
+                        if (state.locked || state.isDuplicateTab || state.isNavigating || state.isUnloading) {
                             return;
                         }
                         hideQuestions();
                         window.setTimeout(function() {
-                            if (state.isNavigating || state.isUnloading) {
+                            if (state.locked || state.isDuplicateTab || state.isNavigating || state.isUnloading) {
                                 return;
                             }
                             if (typeof document.hasFocus === 'function' && !document.hasFocus()) {
@@ -1254,7 +1613,8 @@
 
     /**
      * Active focus watchdog: runs every 200ms to detect Ask Gemini side panel or window blur.
-     * Triggers reportViolation('windowblur') after 2 consecutive checks (400ms) with !hasFocus().
+     * Edge-triggered: fires reportViolation('windowblur') once after 2 consecutive checks
+     * (400ms) with !hasFocus(), and will not fire again until focus returns to the document.
      */
     function startFocusWatchdog() {
         if (state.focuswatchdogtimer) {
@@ -1262,7 +1622,8 @@
         }
         state.focuswatchdogtimer = window.setInterval(function() {
             attachEditorIframeListeners();
-            if (state.isNavigating || state.isUnloading || isBootGrace()) {
+            if (state.locked || state.isDuplicateTab || state.isNavigating
+                    || state.isUnloading || isBootGrace() || isUnlockGrace()) {
                 lostFocusConsecutiveCount = 0;
                 return;
             }
@@ -1270,18 +1631,30 @@
                 if (!document.hasFocus()) {
                     lostFocusConsecutiveCount++;
                     hideQuestions();
-                    if (lostFocusConsecutiveCount >= 2) {
+                    if (lostFocusConsecutiveCount >= 2 && !state.focusViolationFired) {
                         lostFocusConsecutiveCount = 0;
+                        state.focusViolationFired = true;
                         reportViolation('windowblur');
                     }
                 } else {
                     lostFocusConsecutiveCount = 0;
-                    if (!state.locked) {
+                    state.focusViolationFired = false;
+                    if (!state.locked && !state.isDuplicateTab) {
                         restoreQuestions();
                     }
                 }
             }
         }, 200);
+    }
+
+    /**
+     * Reset edge-triggered focus state when active user interaction occurs in an unlocked active tab.
+     */
+    function onUserActivityResetFocus() {
+        if (!state.locked && !state.isDuplicateTab) {
+            lostFocusConsecutiveCount = 0;
+            state.focusViolationFired = false;
+        }
     }
 
     /**
@@ -1294,6 +1667,7 @@
         // on all possible quiz navigation elements (buttons, links, question numbers)
         // to set isNavigating = true before the browser begins page teardown.
         function onEarlyNavInteraction(event) {
+            onUserActivityResetFocus();
             if (findNavElement(event.target)) {
                 markNavigating();
             }
@@ -1306,6 +1680,7 @@
         }
         document.addEventListener('click', onEarlyNavInteraction, true);
         document.addEventListener('keydown', function(event) {
+            onUserActivityResetFocus();
             if (event.key === 'Enter' || event.keyCode === 13 || event.key === ' ' || event.keyCode === 32) {
                 onEarlyNavInteraction(event);
             }
@@ -1319,7 +1694,7 @@
             }
         }, true);
 
-        // When page unload starts, cancel any scheduled violation and flag unloading
+        // When page unload starts, cancel any scheduled violation and release tab lease.
         window.addEventListener('beforeunload', function() {
             // Short release: covers a cancelled "leave page?" dialog.
             markUnloading(4000);
@@ -1330,10 +1705,14 @@
             markUnloading(4000);
         });
 
-        // Page restored from the back/forward cache: detection must be alive again.
+        // Page restored from the back/forward cache: detection and lease must be alive again.
         window.addEventListener('pageshow', function(event) {
             if (event && event.persisted) {
                 releaseNavigation();
+                initSingleTabGuard();
+                if (state.isDuplicateTab) {
+                    return;
+                }
                 if (state.locked) {
                     requestHeartbeat();
                 } else if (typeof document.hasFocus !== 'function' || document.hasFocus()) {
@@ -1344,9 +1723,12 @@
 
         document.addEventListener('visibilitychange', function() {
             trace('vis:' + document.visibilityState);
+            if (state.isDuplicateTab) {
+                return;
+            }
             if (document.visibilityState === 'hidden') {
                 hideQuestions();
-                if (state.isNavigating || state.isUnloading) {
+                if (state.locked || state.isNavigating || state.isUnloading) {
                     return;
                 }
                 scheduleViolation('tabswitch');
@@ -1363,11 +1745,11 @@
 
         window.addEventListener('blur', function() {
             trace('blur');
-            if (state.isNavigating || state.isUnloading) {
+            if (state.locked || state.isDuplicateTab || state.isNavigating || state.isUnloading) {
                 return;
             }
             // Point 2: boot grace holds back false windowblur during initial render.
-            if (isBootGrace()) {
+            if (isBootGrace() || isUnlockGrace()) {
                 trace('skip-boot-blur');
                 return;
             }
@@ -1387,11 +1769,13 @@
 
         window.addEventListener('focus', function() {
             trace('focus');
+            onUserActivityResetFocus();
             // Window regained focus: cancel pending blur violation
             if (pendingViolationType === 'windowblur') {
                 cancelPendingViolation();
             }
-            if (!state.locked && (typeof document.hasFocus !== 'function' || document.hasFocus())) {
+            if (!state.locked && !state.isDuplicateTab
+                    && (typeof document.hasFocus !== 'function' || document.hasFocus())) {
                 restoreQuestions();
             }
         });
@@ -1405,7 +1789,15 @@
      * @param {string} type event type.
      */
     function reportViolation(type) {
-        if (state.isNavigating || state.isUnloading) {
+        if (state.isDuplicateTab || state.isNavigating || state.isUnloading) {
+            return;
+        }
+        // LOCK-PAUSE: while locked, ignore all violations except overlay tampering.
+        if (state.locked && type !== 'overlayremoved') {
+            return;
+        }
+        if (type !== 'overlayremoved' && isUnlockGrace()) {
+            trace('blocked-unlock-grace:' + type);
             return;
         }
 
@@ -1418,8 +1810,8 @@
         // Cooldown/throttle: 0ms if state.locked === false (first violation is always immediate).
         if (state.locked) {
             var ms = nowMs();
-            var throttle = Math.max(4000, (settings.dedupewindow || 3) * 1000);
-            if ((ms - state.lastviolationreport) < throttle) {
+            var throttleMs = Math.max(4000, (settings.dedupewindow || 3) * 1000);
+            if ((ms - state.lastviolationreport) < throttleMs) {
                 return;
             }
             state.lastviolationreport = ms;
@@ -1427,10 +1819,28 @@
             state.lastviolationreport = nowMs();
         }
 
-        if (!state.locked) {
-            // Lock first, the network answer only corrects the countdown.
+        var wasLocked = state.locked;
+        if (!wasLocked) {
+            // Send AJAX first before state.locked turns true so sendAction's lock-pause gate
+            // does not block this initial violation, then lock immediately.
+            sendAction('violation', {eventtype: type, meta: navDiagnostics(type)}, function(error, data) {
+                if (error || !data || data.status !== 'ok') {
+                    queuePending(type);
+                    startHeartbeat();
+                    return;
+                }
+                state.provisional = false;
+                applyServerState(data);
+                if (data.remaining > 0) {
+                    lockScreen(data.penaltyuntil, data.violationcount, false);
+                } else if (state.locked) {
+                    unlockScreen(data);
+                }
+                startHeartbeat();
+            });
             lockScreen(serverNow() + (settings.penaltyseconds || 120),
                 (state.violationcount || 0) + 1, true);
+            return;
         }
 
         sendAction('violation', {eventtype: type, meta: navDiagnostics(type)}, function(error, data) {
@@ -1591,6 +2001,9 @@
         state.locked = false;
         state.provisional = false;
         state.penaltyuntil = 0;
+        lostFocusConsecutiveCount = 0;
+        state.focusViolationFired = false;
+        state.unlockGraceUntil = nowMs() + UNLOCK_GRACE_MS;
 
         if (state.countdowntimer) {
             window.clearInterval(state.countdowntimer);
@@ -1609,8 +2022,8 @@
 
         clearStorage();
         resumeQuizTimer(data);
-        if (typeof document.hasFocus !== 'function' || document.hasFocus()) {
-            restoreQuestions();
+        if (!state.isDuplicateTab) {
+            restoreQuestions(true);
         }
     }
 
@@ -1618,14 +2031,14 @@
      * Ask the server for the authoritative remaining time.
      */
     function heartbeat() {
-        if (state.heartbeatsinflight) {
+        if (state.heartbeatsinflight || state.isDuplicateTab) {
             return;
         }
         state.heartbeatsinflight = true;
 
         sendAction('heartbeat', {}, function(error, data) {
             state.heartbeatsinflight = false;
-            if (error || !data || data.status !== 'ok') {
+            if (error || !data || data.status !== 'ok' || state.isDuplicateTab) {
                 return;
             }
 
@@ -1650,6 +2063,9 @@
      * Throttled heartbeat used by the countdown and the watchdog.
      */
     function requestHeartbeat() {
+        if (state.isDuplicateTab) {
+            return;
+        }
         var ms = nowMs();
         if ((ms - state.lastheartbeat) < 5000) {
             return;
@@ -1659,13 +2075,19 @@
     }
 
     /**
-     * Start the periodic heartbeat used while a penalty is active.
+     * Start the periodic heartbeat (every 6 seconds) used while a penalty is active.
      */
     function startHeartbeat() {
-        if (state.heartbeattimer) {
+        if (state.heartbeattimer || state.isDuplicateTab) {
             return;
         }
-        state.heartbeattimer = window.setInterval(heartbeat, 15000);
+        state.heartbeattimer = window.setInterval(function() {
+            if (state.locked && !state.isDuplicateTab) {
+                heartbeat();
+            } else {
+                stopHeartbeat();
+            }
+        }, HEARTBEAT_INTERVAL_MS);
     }
 
     /**
@@ -1742,7 +2164,7 @@
         contentobserver.observe(document.body, {childList: true, subtree: true});
 
         state.overlayobserver = new MutationObserver(function() {
-            if (state.internalmutation || !state.locked) {
+            if (state.internalmutation || !state.locked || state.isDuplicateTab) {
                 return;
             }
             var overlay = document.getElementById(OVERLAY_ID);
@@ -1797,7 +2219,7 @@
      * Handle a removed or altered overlay: restore it and extend the penalty.
      */
     function onTamper() {
-        if (!state.locked) {
+        if (!state.locked || state.isDuplicateTab) {
             return;
         }
 
@@ -1832,6 +2254,12 @@
             return;
         }
         state.watchdogtimer = window.setInterval(function() {
+            if (state.isDuplicateTab) {
+                if (!document.getElementById(DUPLICATE_OVERLAY_ID)) {
+                    createDuplicateTabOverlay();
+                }
+                return;
+            }
             if (!state.locked) {
                 return;
             }
@@ -1889,6 +2317,15 @@
         startFocusWatchdog();
         setupMutationObserver();
         startWatchdog();
+
+        // Initialise Single-Tab Guard before locking or replaying pending state.
+        var isOwnerTab = initSingleTabGuard();
+        if (!isOwnerTab) {
+            // Remove head anti-flash lock class so the non-penalty duplicate tab overlay is visible.
+            var dupRoot = document.documentElement;
+            dupRoot.className = dupRoot.className.replace(/(^|\s)examguard-lock(\s|$)/g, ' ');
+            return;
+        }
 
         var serverRemaining = (typeof cfg.remaining === 'number')
             ? cfg.remaining

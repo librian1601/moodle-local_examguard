@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<XMLDB PATH="local/examguard/db" VERSION="2026111500"
+<XMLDB PATH="local/examguard/db" VERSION="2026112600"
     COMMENT="ExamGuard: violation log and per-attempt penalty state"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:noNamespaceSchemaLocation="../../../lib/xmldb/xmldb.xsd"
@@ -65,8 +65,9 @@
         <FIELD NAME="id"             TYPE="int"  LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
         <FIELD NAME="quizid"         TYPE="int"  LENGTH="10" NOTNULL="true" DEFAULT="0"   SEQUENCE="false"/>
         <FIELD NAME="enabled"        TYPE="int"  LENGTH="1"  NOTNULL="true" DEFAULT="0"   SEQUENCE="false"/>
-        <FIELD NAME="penaltyseconds" TYPE="int"  LENGTH="10" NOTNULL="true" DEFAULT="120" SEQUENCE="false"/>
-        <FIELD NAME="freezetimermax" TYPE="int"  LENGTH="10" NOTNULL="true" DEFAULT="600" SEQUENCE="false"/>
+        <FIELD NAME="penaltyseconds"    TYPE="int"  LENGTH="10" NOTNULL="true" DEFAULT="120" SEQUENCE="false"/>
+        <FIELD NAME="maxpenaltyseconds" TYPE="int"  LENGTH="10" NOTNULL="true" DEFAULT="600" SEQUENCE="false"/>
+        <FIELD NAME="freezetimermax"    TYPE="int"  LENGTH="10" NOTNULL="true" DEFAULT="600" SEQUENCE="false"/>
         <FIELD NAME="watermark"      TYPE="int"  LENGTH="1"  NOTNULL="true" DEFAULT="1"   SEQUENCE="false"/>
         <FIELD NAME="lang"           TYPE="char" LENGTH="10" NOTNULL="true" DEFAULT="id"  SEQUENCE="false"/>
         <FIELD NAME="timecreated"    TYPE="int"  LENGTH="10" NOTNULL="true" DEFAULT="0"   SEQUENCE="false"/>
